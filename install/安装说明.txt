@@ -1,17 +1,23 @@
 多相机录像台 2.4 · 在新电脑上安装
 ==================================
 
-本压缩包含：程序（mvsdk-python）、离线 Python 依赖、一键安装脚本。
-不包含：显卡驱动、两家相机的 SDK、Python 本身、FFmpeg；它们要按下面的顺序单独安装一次。
-录像会默认保存在本文件夹下的 recordings 文件夹里。
+程序可以从 GitHub 仓库获取（https://github.com/IsaacSuo/RecordingTemp），也可以来自打包的压缩包。
+都不包含：显卡驱动、两家相机的 SDK、Python 本身、FFmpeg；它们要按下面的顺序单独安装一次。
+GitHub 版本还不含 mvsdk 文件夹（MindVision Python 接口）和离线 Python 依赖，见第 0 步。
+录像默认保存在程序文件夹上一级的 recordings 文件夹里。
 
 电脑要求
   Windows 10 / 11 64 位，NVIDIA 显卡（ZED 和 GPU 视频编码都需要），USB 3 接口。
   多台相机时，每台 ZED 最好各自占一条独立的 USB 通道（参见 mvsdk-python\ZED_集成方案.md）。
 
-第 0 步  解压
-  把整个压缩包解压到一个固定位置，例如 D:\多相机录像台\。
-  路径里可以有中文，但解压后不要再挪动文件夹；如果要挪，挪完后重新运行一次 安装.bat。
+第 0 步  获取程序
+  GitHub：先建一个固定文件夹，例如 D:\多相机录像台\，在里面运行
+      git clone https://github.com/IsaacSuo/RecordingTemp.git
+    程序在 D:\多相机录像台\RecordingTemp，录像会存到 D:\多相机录像台\recordings。
+    再把 mvsdk 文件夹（里面有 mvsdk.py）放进 RecordingTemp；它不在仓库里，向维护人员索取。
+    以后更新程序：在 RecordingTemp 里运行 git pull。
+  压缩包：解压到一个固定位置，例如 D:\多相机录像台\。
+  路径里可以有中文，但放好后不要再挪动文件夹；如果要挪，挪完后重新运行一次 安装.bat。
 
 第 1 步  NVIDIA 显卡驱动
   到 NVIDIA 官网下载并安装最新的 Game Ready 或 Studio 驱动。
@@ -29,7 +35,7 @@
 
 第 4 步  Python 3.14（64 位）
   到 https://www.python.org/downloads/ 下载 Python 3.14 的 Windows installer (64-bit)。
-  安装时勾选 “Add python.exe to PATH”。必须是 3.14：随包附带的 ZED Python 接口只适用于 3.14。
+  安装时勾选 “Add python.exe to PATH”。必须是 3.14：安装脚本使用的 ZED Python 接口（pyzed）是 3.14 版本。
 
 第 5 步  FFmpeg
   下载 Windows 版 FFmpeg 完整版（例如 gyan.dev 的 ffmpeg-release-full 或 BtbN 的 win64 gpl 版），解压。
@@ -38,9 +44,10 @@
     b. 或者把 bin 文件夹复制到 mvsdk-python\ffmpeg\bin（程序会自动找到）。
 
 第 6 步  一键安装
-  双击本文件夹里的“安装.bat”。安装脚本会：
+  双击“安装.bat”（GitHub 版本在 install 文件夹里，压缩包在最外层）。安装脚本会：
     - 检查以上各项是否装好，缺什么会写明怎么处理；
-    - 用随包附带的离线安装包创建两个 Python 环境，不需要联网；
+    - 创建两个 Python 环境：有 install\wheels 离线安装包时不需要联网；
+      没有时（GitHub 版本）联网下载，Python 包来自 PyPI，ZED Python 接口来自 Stereolabs，约 40 MB；
     - 在桌面创建“多相机录像台”和“多相机录像台（模拟演示）”快捷方式；
     - 运行不连接相机的离线自检。
   检查结果同时保存在 mvsdk-python\install\install-report.txt。

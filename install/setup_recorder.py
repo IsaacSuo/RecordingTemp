@@ -1,21 +1,28 @@
 """Set up the multi-camera recorder on a new Windows PC (run by 安装.bat with Python 3.14).
 
-Checks the drivers and SDKs, creates .venv-recorder and .venv-zed from the bundled wheels (no internet
-needed), creates desktop shortcuts and runs offline self-tests. Safe to run again: existing environments
-are rebuilt only with --rebuild. A report is written to install\\install-report.txt.
+Checks the drivers and SDKs, creates .venv-recorder and .venv-zed, creates desktop shortcuts and runs
+offline self-tests. Python packages come from install\\wheels when that folder is present (no internet
+needed), otherwise they are downloaded: pinned versions from PyPI, pyzed from Stereolabs. Safe to run
+again: existing environments are rebuilt only with --rebuild. A report is written to install\\install-report.txt.
 """
 import argparse
 import ctypes
+import hashlib
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
+import urllib.request
 
 APP = Path(__file__).resolve().parent.parent          # ...\mvsdk-python
 WHEELS = APP / 'install' / 'wheels'
+DOWNLOADS = APP / 'install' / 'downloads'
 REPORT = APP / 'install' / 'install-report.txt'
+# Online installs use the versions the recorder was tested with.
+PINNED = dict(pillow='pillow==12.3.0', numpy='numpy==2.5.4', cython='cython==3.3.0')
+PYZED_URL = 'https://download.stereolabs.com/zedsdk/5.5/whl/win_amd64/pyzed-5.5-cp{v}-cp{v}-win_amd64.whl'
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 lines = []
 
@@ -61,6 +68,9 @@ def checks():
         mv = False
     results['mindvision'] = check('MindVision SDK', mv, '已找到 MVCAMSDK_X64.dll' if mv else '未找到 MVCAMSDK_X64.dll',
                                   '安装 MindVision（迈德威视）工业相机 SDK 后重启')
+    wrapper = APP / 'mvsdk' / 'mvsdk.py'
+    results['mvsdk'] = check('MindVision Python 接口', wrapper.is_file(), str(wrapper) if wrapper.is_file() else '未找到 mvsdk 文件夹',
+                             f'把 mvsdk 文件夹（含 mvsdk.py）放到 {APP}')
     zed_root = Path(os.environ.get('ZED_SDK_ROOT_DIR', r'C:\Program Files (x86)\ZED SDK'))
     header = zed_root / 'include' / 'sl' / 'Camera.hpp'
     version = None
@@ -82,6 +92,28 @@ def checks():
     return results, ffmpeg
 
 
+def offline():
+    return WHEELS.is_dir() and any(WHEELS.glob('*.whl'))
+
+
+def download_pyzed():
+    url = PYZED_URL.format(v=f'{sys.version_info[0]}{sys.version_info[1]}')
+    target = DOWNLOADS / url.rsplit('/', 1)[1]
+    if not target.is_file():
+        DOWNLOADS.mkdir(parents=True, exist_ok=True)
+        say(f'  下载 {url}')
+        partial = target.with_suffix('.partial')
+        try:
+            with urllib.request.urlopen(url, timeout=60) as response, open(partial, 'wb') as out:
+                shutil.copyfileobj(response, out)
+        except OSError as exc:
+            partial.unlink(missing_ok=True)
+            raise RuntimeError(f'下载 ZED Python 接口失败：{exc}（检查网络；或确认 ZED SDK 为 5.5、Python 为 3.14）')
+        partial.replace(target)
+    say(f'  pyzed：{target.name}，sha256 {hashlib.sha256(target.read_bytes()).hexdigest()}')
+    return str(target)
+
+
 def make_venv(name, packages, rebuild):
     venv = APP / name
     python = venv / 'Scripts' / 'python.exe'
@@ -91,7 +123,11 @@ def make_venv(name, packages, rebuild):
         result = run([sys.executable, '-m', 'venv', str(venv)])
         if result.returncode:
             raise RuntimeError(f'创建 {name} 失败：{result.stderr[-500:]}')
-    result = run([str(python), '-m', 'pip', 'install', '--disable-pip-version-check', '--no-index', '--find-links', str(WHEELS), *packages])
+    if offline():
+        source = ['--no-index', '--find-links', str(WHEELS), *packages]
+    else:
+        source = [download_pyzed() if p == 'pyzed' else PINNED[p] for p in packages]
+    result = run([str(python), '-m', 'pip', 'install', '--disable-pip-version-check', *source])
     if result.returncode:
         raise RuntimeError(f'{name} 安装依赖失败：{result.stdout[-800:]}{result.stderr[-800:]}')
     say(f'  [完成] {name}：{", ".join(packages)}')
@@ -147,7 +183,7 @@ def main():
     if not results['python']:
         raise SystemExit('Python 版本不对，安装中止。')
     say()
-    say('二、创建 Python 环境（使用随包附带的离线安装包）')
+    say('二、创建 Python 环境（' + ('使用随包附带的离线安装包）' if offline() else '联网下载：PyPI 与 Stereolabs）'))
     recorder = make_venv('.venv-recorder', ['pillow'], args.rebuild)
     zed_python = make_venv('.venv-zed', ['pillow', 'numpy', 'cython', 'pyzed'], args.rebuild)
     say()
@@ -166,6 +202,7 @@ def main():
         self_test(recorder, zed_python, results)
         say()
     missing = [name for name, ok in (('NVIDIA 驱动', results['gpu']), ('MindVision SDK', results['mindvision']),
+                                     ('MindVision Python 接口（mvsdk 文件夹）', results['mvsdk']),
                                      ('ZED SDK 5.5', results['zed']), ('FFmpeg', results['ffmpeg'])) if not ok]
     if missing:
         say('安装完成，但还缺：' + '、'.join(missing) + '。按上面的处理方法装好后，再运行一次 安装.bat 检查。')
