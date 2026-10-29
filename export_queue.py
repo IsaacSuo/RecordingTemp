@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 
+from subprocess_worker import kill_tree  # also stops the ffmpeg encoders, which would keep partial files open
 from zed_support import WORKER_SCRIPT, worker_python
 
 EXPORT_SCRIPT = Path(__file__).resolve().parent / 'zed_export.py'
@@ -18,17 +19,6 @@ EXPORT_CHOICES = {
     '左右目 + 深度 NEURAL_LIGHT（较快）': 'NEURAL_LIGHT',
 }
 DEFAULT_EXPORT = '左右目视频（不算深度）'
-
-
-def kill_tree(process):
-    """Stop an export and its ffmpeg encoders, which would otherwise keep the partial files open."""
-    if process is None or process.poll() is not None:
-        return
-    if os.name == 'nt':
-        subprocess.run(['taskkill', '/T', '/F', '/PID', str(process.pid)], capture_output=True,
-                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    if process.poll() is None:
-        process.kill()
 
 
 BATCH_LOCK = threading.Lock()  # concurrent exports of one batch update the same batch.json

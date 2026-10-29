@@ -117,6 +117,7 @@ class LiveCamera:
         self.timestamp_clock = str(sl.Camera.get_timestamp_clock())
         self.runtime = sl.RuntimeParameters()
         self.mat = sl.Mat()
+        self.small = sl.Mat()
 
     def grab(self):
         code = self.camera.grab(self.runtime)
@@ -134,6 +135,20 @@ class LiveCamera:
         if code != self.sl.ERROR_CODE.SUCCESS:
             raise RuntimeError(f'预览取图失败：{code}')
         return width, height, self.mat.get_data().tobytes(), 'BGRX'
+
+    def color_ratios(self):
+        """(R/G, B/G, usable fraction) of a small left image, ignoring near-black and clipped pixels."""
+        import numpy as np
+        code = self.camera.retrieve_image(self.small, self.sl.VIEW.LEFT_BGR, self.sl.MEM.CPU, self.sl.Resolution(160, 90))
+        if code != self.sl.ERROR_CODE.SUCCESS:
+            return None
+        pixels = self.small.get_data().reshape(-1, 3).astype(np.float32)
+        brightest = pixels.max(axis=1)
+        keep = (brightest > 20) & (brightest < 245)
+        if keep.mean() < 0.2:
+            return None
+        b, g, r = pixels[keep].mean(axis=0)
+        return (float(r / g), float(b / g), float(keep.mean())) if g > 0 else None
 
     def get(self, key):
         code, value = self.camera.get_camera_settings(getattr(self.sl.VIDEO_SETTINGS, SETTING_NAMES[key]))
@@ -211,6 +226,8 @@ class SimCamera:
     simulated = True
 
     def __init__(self, args):
+        if args.sim_open_delay:
+            time.sleep(args.sim_open_delay)  # like Camera.open() stuck in the SDK; no commands are read meanwhile
         self.args = args
         self.size = SIZES[args.resolution]
         self.serial = str(args.serial)
@@ -275,6 +292,16 @@ class SimCamera:
         draw.rectangle((x, height // 2 - 30, x + 60, height // 2 + 30), fill=(220, 160, 60))
         draw.text((20, 20), f'SIMULATED ZED {self.serial}  frame {self.index}', fill='white')
         return width, height, image.tobytes(), 'RGB'
+
+    def color_ratios(self):
+        """Scene lit at --sim-light K. Auto WB renders it neutral; a manual setting T tints it warm (T above the
+        light) or cool (T below), as a real camera does. Like the ZED, the reported temperature does not follow
+        auto white balance."""
+        import math
+        if self.args.sim_dark:
+            return None
+        cast = 0 if self.values['wb_auto'] else 0.25 * (self.values['wb_temperature'] - self.args.sim_light) / 1000
+        return math.exp(cast), math.exp(-cast), 1.0
 
     def get(self, key):
         if key == 'led' and self.args.sim_led_fail:
@@ -371,7 +398,7 @@ class Worker:
         self.session = None
         self.active = False
         self.full_preview = False
-        self.wb = None
+        self.last_wb_calibration = None
         self.original = self.read_values()
 
     # -- messaging
@@ -473,8 +500,61 @@ class Worker:
                 self.camera.set('exposure', values['exposure'])
                 self.camera.set('gain', values['gain'])
 
+    def measure_color(self, frames=4, samples=1):
+        """Average colour ratios after letting `frames` new frames through; None if the image cannot be measured."""
+        readings = []
+        for _ in range(samples):
+            for _ in range(frames):
+                self.camera.grab()
+            reading = self.camera.color_ratios()
+            if reading is None:
+                return None
+            readings.append(reading)
+        return tuple(sum(r[i] for r in readings) / len(readings) for i in range(2))
+
+    def calibrate_white_balance(self, settle_s=1.5):
+        """Find the manual colour temperature whose image matches what auto white balance shows, and lock it.
+
+        With auto white balance on, the ZED SDK keeps reporting the last manual value (4700 K by default), not
+        the temperature auto white balance is using, so that reading cannot be locked. Instead: let auto white
+        balance settle, measure the image colour, then search the manual range for the closest match.
+        If the image cannot be measured, auto white balance stays on rather than locking a wrong value."""
+        started = time.monotonic()
+        camera = self.camera
+        camera.set('wb_auto', 1)
+        while time.monotonic() - started < settle_s:
+            camera.grab()
+        target = self.measure_color(frames=3, samples=3)
+        if target is None:
+            camera.set('wb_auto', 1)
+            return dict(locked=False, method='match auto white balance image colour',
+                        reason='画面过暗或过曝，无法测量颜色；保持自动白平衡（录制中颜色可能随场景变化）')
+        tried = {}
+
+        def distance(kelvin):
+            if kelvin not in tried:
+                camera.set('wb_temperature', kelvin)  # also turns auto white balance off
+                tried[kelvin] = self.measure_color()
+            measured = tried[kelvin]
+            if measured is None:
+                return float('inf')
+            return (measured[0] - target[0]) ** 2 + (measured[1] - target[1]) ** 2
+
+        low, high = RANGES['wb_temperature']
+        best = min(range(low, high + 1, 900), key=distance)          # 2800, 3700, 4600, 5500, 6400
+        for step in (300, 100):                                     # refine around the best so far
+            best = min((k for k in range(best - 3 * step, best + 3 * step + 1, step) if low <= k <= high), key=distance)
+        camera.set('wb_temperature', best)
+        achieved = self.measure_color()
+        residual = distance(best)
+        return dict(locked=True, kelvin=best, method='match auto white balance image colour',
+                    target_ratios=dict(r_over_g=round(target[0], 4), b_over_g=round(target[1], 4)),
+                    achieved_ratios=dict(r_over_g=round(achieved[0], 4), b_over_g=round(achieved[1], 4)) if achieved else None,
+                    residual=round(residual, 6), temperatures_tried=len(tried), seconds=round(time.monotonic() - started, 2),
+                    note='ZED 在自动白平衡时报告的色温不随画面变化，因此按画面颜色匹配出手动色温')
+
     def lock_automatic(self):
-        locked = {}
+        locked, calibration = {}, None
         if self.camera.get('aec_agc'):
             exposure, gain = self.camera.get('exposure'), self.camera.get('gain')
             self.camera.set('aec_agc', 0)
@@ -482,13 +562,14 @@ class Worker:
             self.camera.set('gain', gain)
             locked.update(exposure=exposure, gain=gain)
         if self.camera.get('wb_auto'):
-            temperature = round(self.camera.get('wb_temperature') / 100) * 100
-            self.camera.set('wb_auto', 0)
-            self.camera.set('wb_temperature', temperature)
-            locked.update(wb_temperature=temperature)
+            calibration = self.calibrate_white_balance()
+            if calibration['locked']:
+                locked.update(wb_temperature=calibration['kelvin'])
+            else:
+                self.emit('notice', text=calibration['reason'])
         for _ in range(5):  # let the new manual settings reach the stream before recording
             self.camera.grab()
-        return locked
+        return locked, calibration
 
     def snapshot(self):
         values = self.read_values()
@@ -496,25 +577,17 @@ class Worker:
                     mode_label=self.args.mode_label, resolution=self.args.resolution, nominal_fps=self.args.fps,
                     note='ZED SDK units; null/missing means unavailable. Settings are read only before and after recording.')
 
-    # -- white balance: auto until stable, then lock
-    def wb_step(self):
-        state = self.wb
-        now = time.monotonic()
-        if now - state['last'] < 0.2:
-            return
-        state['last'] = now
-        kelvin = self.camera.get('wb_temperature')
-        state['samples'] = [(t, k) for t, k in state['samples'] + [(now, kelvin)] if now - t <= 1.5]
-        spread = max(k for _, k in state['samples']) - min(k for _, k in state['samples'])
-        stable = len(state['samples']) >= 5 and state['samples'][-1][0] - state['samples'][0][0] >= 1 and spread <= 100
-        if now - state['started'] >= 2 and stable or now - state['started'] >= 10:
-            kelvin = round(kelvin / 100) * 100
-            self.camera.set('wb_auto', 0)
-            self.camera.set('wb_temperature', kelvin)
-            request, self.wb = state['request'], None
-            self.emit('notice', text=f'白平衡已锁定为 {kelvin} K' + ('' if stable else '（10 秒内未完全稳定）'))
-            if request:
-                self.emit('advanced', controls=self.controls(), request=request, applied=False)
+    # -- white balance button: auto white balance, then lock the matching manual temperature
+    def white_balance_button(self, request):
+        self.emit('notice', text='ZED 正在测量白平衡（约 3–5 秒）；请让中性白 / 灰目标充满画面')
+        result = self.calibrate_white_balance()
+        self.last_wb_calibration = result
+        if result['locked']:
+            self.emit('notice', text=f'白平衡已按画面锁定为 {result["kelvin"]} K')
+        else:
+            self.emit('notice', text=result['reason'])
+        if request:
+            self.emit('advanced', controls=self.controls(), request=request, applied=False)
 
     # -- recording
     def prepare(self, command):
@@ -526,7 +599,7 @@ class Worker:
         name = safe_name(self.camera.serial)
         settings = ZedSettings.from_dict(command['settings'])
         applied = self.apply_settings(settings)
-        locked = self.lock_automatic()
+        locked, wb_calibration = self.lock_automatic()
         self.emit('settings', settings=self.settings().as_dict())
         snapshot = self.snapshot()
         calibration = []
@@ -549,6 +622,7 @@ class Worker:
                     resolution=self.args.resolution, width=self.camera.size[0], height=self.camera.size[1],
                     nominal_fps=self.args.fps, target_fps=self.args.fps, compression=command['compression'], flip=self.args.flip,
                     settings=applied.as_dict(), locked_from_auto=locked, firmware=self.camera.firmware,
+                    white_balance_calibration=wb_calibration or getattr(self, 'last_wb_calibration', None),
                     sdk_version=self.camera.sdk_version, timestamp_clock=self.camera.timestamp_clock,
                     init_parameters=self.camera.init_parameters, camera_information=self.camera.information,
                     calibration_files=calibration, video=str(svo), received_jsonl=journal.stream.name,
@@ -582,14 +656,15 @@ class Worker:
             # SDK 5.5 can drop the last frame of an SVO2 when recording stops. One extra, uncounted
             # frame is recorded so that every counted frame stays in the file; it is logged as padding.
             try:
-                ok, _ = self.camera.grab()
-                if ok:
-                    stamp = self.camera.timestamp_ns()
-                    if stamp // 1000 != audit.last_us:
+                for _ in range(4):  # grab can return the previous frame again; the padding must be a new one
+                    ok, _ = self.camera.grab()
+                    stamp = self.camera.timestamp_ns() if ok else None
+                    if stamp is not None and stamp // 1000 != audit.last_us:
                         padding_us = stamp // 1000
                         session['journal'].write(dict(receive_index=None, duplicate=False, stop_padding=True,
                                                       camera_timestamp_ns=stamp, camera_timestamp_us=padding_us,
                                                       host_receive_monotonic_ns=time.monotonic_ns(), host_receive_unix_ns=time.time_ns()))
+                        break
             except Exception as exc:
                 info['errors'].append(f'停止填充帧失败：{exc}')
         try:
@@ -680,9 +755,7 @@ class Worker:
             elif name == 'apply':
                 self.emit('settings', settings=self.apply_settings(ZedSettings.from_dict(command['settings'])).as_dict())
             elif name == 'wb':
-                self.camera.set('wb_auto', 1)
-                self.wb = dict(started=time.monotonic(), last=0, samples=[], request=request)
-                self.emit('notice', text='ZED 自动白平衡调整中，稳定后锁定色温；请让中性白 / 灰目标充满画面')
+                self.white_balance_button(request)
             elif name in ('advanced_get', 'advanced_apply'):
                 changes = command.get('changes', {})
                 controls = self.apply_controls(changes) if name == 'advanced_apply' else self.controls()
@@ -722,8 +795,6 @@ class Worker:
                         break
                 if not self.running:
                     break
-                if self.wb and not self.session:
-                    self.wb_step()
                 called = time.perf_counter_ns()
                 ok, code = self.camera.grab()
                 returned = time.perf_counter_ns()
@@ -831,10 +902,10 @@ def main():
     parser.add_argument('--verify-svo', type=Path, help='SVO2 file to decode completely')
     parser.add_argument('--received', type=Path, help='matching <serial>.received.jsonl')
     parser.add_argument('--serial', default='0')
-    parser.add_argument('--resolution', default='HD1080', choices=list(SIZES))
+    parser.add_argument('--resolution', default='HD720', choices=list(SIZES))
     parser.add_argument('--fps', type=int, default=30)
     parser.add_argument('--flip', default='AUTO', choices=['AUTO', 'ON', 'OFF'])
-    parser.add_argument('--mode-label', default='HD1080 @ 30')
+    parser.add_argument('--mode-label', default='HD720 @ 30')
     parser.add_argument('--simulate', action='store_true')
     parser.add_argument('--sim-fps', type=float)
     for name in ('drop', 'dup', 'stall', 'reset'):
@@ -843,6 +914,9 @@ def main():
     parser.add_argument('--sim-lose-last', action='store_true')
     parser.add_argument('--sim-hang-prepare', action='store_true', help='simulate a camera stuck inside the SDK (tests)')
     parser.add_argument('--sim-freeze-after', type=float, default=0, help='grab() blocks forever after this many seconds (tests)')
+    parser.add_argument('--sim-open-delay', type=float, default=0, help='opening the camera blocks this many seconds (tests)')
+    parser.add_argument('--sim-light', type=int, default=4700, help='simulated scene colour temperature in K (tests)')
+    parser.add_argument('--sim-dark', action='store_true', help='image too dark to measure white balance (tests)')
     parser.add_argument('--sim-led-fail', action='store_true')
     args = parser.parse_args()
     if args.verify_svo:

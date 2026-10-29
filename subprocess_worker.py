@@ -78,6 +78,18 @@ def protect_stdout():
     return os.fdopen(proto_fd, 'wb', buffering=0)
 
 
+def kill_tree(process):
+    """End a worker and everything it started. A venv python.exe is only a launcher for the real interpreter,
+    so killing the launcher alone would leave the camera process (and the camera) held."""
+    if process is None or process.poll() is not None:
+        return
+    if os.name == 'nt':
+        subprocess.run(['taskkill', '/T', '/F', '/PID', str(process.pid)], capture_output=True,
+                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    if process.poll() is None:
+        process.kill()
+
+
 # ---------------------------------------------------------------- app side
 
 class SubprocessWorker(threading.Thread):
@@ -109,6 +121,10 @@ class SubprocessWorker(threading.Thread):
 
     def command(self, name, **data):
         self.commands.put((name, data))
+
+    def terminate(self):
+        """Force-end the camera process tree (used for cameras stuck inside a vendor SDK call)."""
+        kill_tree(self.process)
 
     def take_preview(self):
         with self._preview_lock:
@@ -206,10 +222,9 @@ class SubprocessWorker(threading.Thread):
                     self._send('close')
                     self.process.wait(timeout=30)
                 except Exception:
-                    self.process.kill()
+                    kill_tree(self.process)
         finally:
-            if self.process and self.process.poll() is None:
-                self.process.kill()
+            kill_tree(self.process)
             log.close()
             if self.session:
                 self.session = None

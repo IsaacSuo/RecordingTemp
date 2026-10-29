@@ -88,6 +88,9 @@ ZED 2i 数据（schema=zed-recording/1，MP4 与研究模式都保存 SVO2）
       sdk_dropped_total：SDK 原始丢帧计数，负载高时会清零，仅供参考。
       stop_padding=true：停止时多录的填充帧，不计入帧数，可能在也可能不在 SVO2 中。
   <序列号>.json：snapshot_start / snapshot_end 记录全部可读的相机参数。locked_from_auto 记录开始时由自动锁定的值。
+      white_balance_calibration：白平衡锁定方式。locked、kelvin（锁定色温）、target_ratios（自动白平衡画面的 R/G、B/G）、
+      achieved_ratios（锁定后的 R/G、B/G）、residual（两者差的平方和）；locked=false 时 reason 说明为何保持自动。
+      2026-10-26 之前的 ZED 录像一律锁在 4700 K（读到的是默认值），颜色可能偏暖。
       integrity 中分开记录：
         camera_missing_frames：相机 / SDK 侧缺帧。
         app_missing_frames：程序处理不足造成的缺帧。

@@ -229,6 +229,58 @@ class RecordingTests(unittest.TestCase):
             del root
             gc.collect()
 
+    def leftover_workers(self, marker):
+        """Camera processes still running whose command line contains marker (both launcher and interpreter)."""
+        script = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*" + marker + "*' -and "
+                  "$_.Name -match '^pythonw?\\.exe$' } | ForEach-Object { $_.ProcessId }")
+        output = subprocess.run(['powershell', '-NoProfile', '-Command', script], capture_output=True, text=True,
+                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).stdout
+        return [line for line in output.split() if line.strip()]
+
+    def test_disconnect_and_close_while_zed_is_still_opening(self):
+        import tkinter as tk
+        from multi_camera_app import RecorderApp
+        marker = '--sim-open-delay 3601.5'
+        for action in ('disconnect', 'close'):
+            root = tk.Tk()
+            root.withdraw()
+            with tempfile.TemporaryDirectory() as folder:
+                app = RecorderApp(root, demo=True, output=folder)
+
+                def pump(predicate, seconds=30):
+                    until = time.monotonic() + seconds
+                    while time.monotonic() < until:
+                        try:
+                            root.update()
+                            if predicate():
+                                return True
+                        except tk.TclError:  # the window has been destroyed
+                            return True
+                        time.sleep(0.01)
+                    return False
+                app.scan()
+                self.assertTrue(pump(lambda: app.scan_complete))
+                zed = app.cards['DEMO-ZED-01']
+                zed.info['extra_args'] = marker.split()
+                app.connect_selected()
+                self.assertTrue(pump(lambda: all(c.ready for k, c in app.cards.items() if k != 'DEMO-ZED-01')))
+                self.assertTrue(pump(lambda: len(self.leftover_workers(marker)) > 0, 20))
+                self.assertFalse(zed.connected)  # still "opening"
+                started = time.monotonic()
+                if action == 'disconnect':
+                    app.disconnect_all()
+                    self.assertTrue(pump(lambda: not app.disconnecting, 15), 'disconnect stayed busy')
+                    self.assertLess(time.monotonic() - started, 15)
+                    self.assertEqual(str(app.scan_button.cget('state')), 'normal')  # UI usable again
+                    app.close()
+                else:
+                    app.close()
+                self.assertTrue(pump(lambda: not root.winfo_exists(), 20), 'window did not close')
+                self.assertLess(time.monotonic() - started, 20)
+                self.assertTrue(pump(lambda: not self.leftover_workers(marker), 10), 'camera process left running')
+                del app, pump
+            gc.collect()
+
     def test_gui_marks_camera_without_images(self):
         import tkinter as tk
         from multi_camera_app import RecorderApp

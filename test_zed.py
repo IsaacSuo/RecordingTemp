@@ -195,6 +195,35 @@ class WorkerProcessTests(unittest.TestCase):
         worker.join(20)
         self.assertEqual(worker.process.returncode, 0)
 
+    def test_white_balance_locks_to_scene_not_reported_4700(self):
+        for light in (3200, 5600):
+            folder = self.make_folder()
+            worker, events = self.start(folder, '--sim-light', str(light))
+            summary = self.record(worker, events, folder, seconds=0.5)
+            calibration = summary['white_balance_calibration']
+            self.assertTrue(calibration['locked'], calibration)
+            self.assertLessEqual(abs(summary['locked_from_auto']['wb_temperature'] - light), 100, calibration)
+            self.assertLess(calibration['residual'], 1e-3)
+            self.assertEqual(summary['snapshot_start']['values']['wb_auto'], 0)
+            worker.command('close')
+            self.wait(events, 'closed')
+
+    def test_white_balance_stays_auto_when_image_unmeasurable(self):
+        folder = self.make_folder()
+        worker, events = self.start(folder, '--sim-dark')
+        summary = self.record(worker, events, folder, seconds=0.5)
+        self.assertFalse(summary['white_balance_calibration']['locked'])
+        self.assertNotIn('wb_temperature', summary['locked_from_auto'])
+        self.assertEqual(summary['snapshot_start']['values']['wb_auto'], 1)
+
+    def test_white_balance_button_matches_scene(self):
+        folder = self.make_folder()
+        worker, events = self.start(folder, '--sim-light', '3900')
+        worker.command('wb', request='w1')
+        controls = self.wait(events, 'advanced')['controls']
+        self.assertFalse(controls['wb_auto']['value'])
+        self.assertLessEqual(abs(controls['wb_temperature']['value'] - 3900), 100)
+
     def test_settings_locked_while_recording(self):
         folder = self.make_folder()
         worker, events = self.start(folder)

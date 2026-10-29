@@ -353,7 +353,8 @@ class RecorderApp:
     PREPARE_TIMEOUT_S = 45
     NO_IMAGE_WARN_S = 10  # connected but no statistics from the worker: usually a USB link the SDK keeps recovering
     STOP_TIMEOUT_S = 60
-    CLOSE_TIMEOUT_S = 60
+    CLOSE_TIMEOUT_S = 60       # while a batch is being saved
+    DISCONNECT_TIMEOUT_S = 20  # connected cameras restoring their settings
 
     def __init__(self, root, demo=False, output=None):
         self.root, self.demo = root, demo
@@ -798,13 +799,32 @@ class RecorderApp:
             card.worker.start()
         self.refresh_controls()
 
+    def release_cameras(self):
+        """Ask connected cameras to close; end the processes of cameras that never connected.
+
+        A camera still opening is blocked inside the vendor SDK (waiting for USB or for another ZED to open)
+        and cannot read a close command; it has nothing to save or restore, so its process is ended now."""
+        for card in self.cards.values():
+            if not (card.worker and card.worker.is_alive()):
+                continue
+            if card.connected or not hasattr(card.worker, 'terminate'):
+                card.worker.command('close')
+            else:
+                card.worker.terminate()
+                card.show_state('已取消连接', DIM)
+
     def disconnect_all(self):
         self.disconnecting = True
-        for card in self.cards.values():
-            if card.worker and card.worker.is_alive():
-                card.worker.command('close')
+        self.disconnect_since = time.monotonic()
+        self.release_cameras()
         self.note('正在断开相机并恢复原参数…')
         self.refresh_controls()
+
+    def end_unresponsive(self, reason):
+        for card in self.cards.values():
+            if card.worker and card.worker.is_alive() and hasattr(card.worker, 'terminate'):
+                card.worker.terminate()
+                self.note(f'{self.camera_name(card.info["serial"])} {reason}，已结束该相机进程', True)
 
     def choose_folder(self):
         folder = filedialog.askdirectory(initialdir=self.output.get(), title='选择录像保存文件夹')
@@ -995,9 +1015,8 @@ class RecorderApp:
         elif self.phase == 'stopping':
             for serial in sorted(self.batch['waiting']):
                 card = self.cards[serial]
-                process = getattr(card.worker, 'process', None)
-                if process is not None and process.poll() is None:
-                    process.kill()  # its log stays in logs\; the recorder cannot release a camera stuck inside the SDK
+                if hasattr(card.worker, 'terminate'):
+                    card.worker.terminate()  # its log stays in logs\; the recorder cannot release a camera stuck inside the SDK
                 card.show_state('无响应，已结束', DANGER)
                 self.batch['summaries'][serial] = dict(complete=False, errors=[
                     f'{self.STOP_TIMEOUT_S} 秒内没有响应停止命令，已结束该相机进程；文件可能不完整'])
@@ -1293,12 +1312,14 @@ class RecorderApp:
         live = any(c.worker and c.worker.is_alive() for c in self.cards.values())
         if self.disconnecting and not live:
             self.disconnecting = False
-        if self.closing and live and time.monotonic() - self.closing_since > self.CLOSE_TIMEOUT_S:
-            for card in self.cards.values():
-                process = getattr(card.worker, 'process', None)
-                if card.worker and card.worker.is_alive() and process is not None and process.poll() is None:
-                    process.kill()
-            live = any(c.worker and c.worker.is_alive() and getattr(c.worker, 'process', None) is None for c in self.cards.values())
+        if self.disconnecting and live and time.monotonic() - self.disconnect_since > self.DISCONNECT_TIMEOUT_S:
+            self.end_unresponsive(f'{self.DISCONNECT_TIMEOUT_S} 秒内没有完成断开')
+            self.disconnect_since = time.monotonic()  # worker threads exit within a few seconds after the kill
+        close_limit = self.CLOSE_TIMEOUT_S if self.batch else self.DISCONNECT_TIMEOUT_S
+        if self.closing and live and time.monotonic() - self.closing_since > close_limit:
+            self.end_unresponsive('退出时没有响应')
+            self.closing_since = time.monotonic()
+            live = any(c.worker and c.worker.is_alive() and not hasattr(c.worker, 'terminate') for c in self.cards.values())
         if self.closing and not live and not self.scanning:
             self.root.destroy()
             return
@@ -1328,9 +1349,7 @@ class RecorderApp:
             if card.focus_window:
                 card.focus_window.close()
         self.stop_recording()
-        for card in self.cards.values():
-            if card.worker and card.worker.is_alive():
-                card.worker.command('close')
+        self.release_cameras()
         self.set_status('正在退出', LINE, MUTED)
         self.session_text.configure(text='正在保存录像、断开相机并退出…')
         self.refresh_controls()

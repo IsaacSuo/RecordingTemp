@@ -14,7 +14,7 @@ import time
 
 from multi_camera_core import SDKSystem, CameraWorker, MindVisionProcessWorker, Settings
 from research_data import utc_now
-from zed_support import ZedWorker, ZedSettings, ZED_PYTHON, WORKER_SCRIPT, list_devices
+from zed_support import DEFAULT_MODE, ZedWorker, ZedSettings, ZED_PYTHON, WORKER_SCRIPT, list_devices
 
 
 def main():
@@ -34,7 +34,7 @@ def main():
                                      MindVisionProcessWorker(device, events, log_folder=folder))
     zed_devices, note = list_devices()
     for device in zed_devices:
-        zed_info = dict(device, mode='HD1080 @ 30')
+        zed_info = dict(device, mode=DEFAULT_MODE)
         workers[zed_info['serial']] = ZedWorker(zed_info, events, log_folder=folder)
     if not workers:
         raise RuntimeError(note or 'No camera found')

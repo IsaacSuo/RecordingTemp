@@ -21,14 +21,15 @@ ZED_SDK = Path(os.environ.get('ZED_SDK_ROOT_DIR', r'C:\Program Files (x86)\ZED S
 
 # Mode label -> (SDK resolution, nominal fps, per-eye size).
 MODES = {
-    'HD1080 @ 30': ('HD1080', 30, (1920, 1080)),
-    'HD720 @ 60': ('HD720', 60, (1280, 720)),
     'HD720 @ 30': ('HD720', 30, (1280, 720)),
+    'HD720 @ 60': ('HD720', 60, (1280, 720)),
+    'HD1080 @ 30': ('HD1080', 30, (1920, 1080)),
     'HD1080 @ 15': ('HD1080', 15, (1920, 1080)),
     'HD2K @ 15': ('HD2K', 15, (2208, 1242)),
     'VGA @ 100': ('VGA', 100, (672, 376)),
 }
-DEFAULT_MODE = 'HD1080 @ 30'
+# User decision 2026-10-26: 720p30 by default (about 110 MB/s per ZED instead of 250 MB/s at 1080p30).
+DEFAULT_MODE = 'HD720 @ 30'
 COMPRESSIONS = {'H.264 有损（默认）': 'H264', 'H.265 有损': 'H265', 'H.265 无损': 'H265_LOSSLESS', 'H.264 无损': 'H264_LOSSLESS'}
 DEFAULT_COMPRESSION = 'H.264 有损（默认）'
 FLIPS = {'自动（按 IMU 判断倒装）': 'AUTO', '不翻转': 'OFF', '翻转 180°': 'ON'}
