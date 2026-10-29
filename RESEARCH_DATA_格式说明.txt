@@ -1,0 +1,138 @@
+研究数据格式 v1 / 应用 2.4-zed
+================================
+
+模式与边界
+  “研究 RAW（全部接收帧）”保存 CameraGetImageBuffer 返回的原始像素
+  缓冲区，在 CameraImageProcess 之前按帧头 uBytes 复制。不会软件旋转、
+  缩放、重采样或重复补帧。预览的方向和颜色处理不改变所保存的原始字节。
+  硬件内部是否已经处理图像仍取决于相机；本版保存 SDK 可提供的数据，
+  不声称绕过传感器/固件中的所有处理。当前相机更高位深输出尚待验证。
+  本模式保存应用实际收到的所有帧，不保证传感器或 USB 绝不丢帧。
+  2.1 默认将预览/MP4 在 SDK ISP 后旋转 180° 并水平镜像，可在高级面板修改。
+  snapshot_start / snapshot_end 的 application_orientation 记录程序旋转、
+  水平与垂直镜像；这些变换不应用到 RAW。SDK 原有镜像等设置另行记录，
+  解码时应区分 SDK 设置与应用层方向，避免把预览方向误当原始数据方向。
+
+文件结构（2.4 起每台相机一个子文件夹 <类型>_<序列号>/，下面的 <批次>/<序列号>.* 文件位于该子文件夹内；
+  研究 RAW 数据集位于 <批次>/mindvision_<序列号>/<序列号>/。batch.json 的 camera_folders 记录对应关系，
+  exports 记录 ZED 导出结果）
+  <批次>/batch.json
+      实验信息、相机清单、模式、应用版本与源码 SHA256、各路结果。
+  <批次>/<序列号>.config、<序列号>.end.config
+      开始前锁定并读回设置后、停止时的 SDK 配置。
+      停止时若设备已断连，结束配置可能不可用；snapshot_end 会说明。
+  <批次>/<序列号>.json
+      此相机的最终采集信息及完整性报告。
+  <批次>/<序列号>/dataset.json
+      schema=mvsdk-research-dataset/1，描述原始数据、参数、实验信息、
+      分段 SHA256、索引 SHA256、起止统计、错误和完整性结果。
+  <批次>/<序列号>/frames.jsonl
+      每行一个实际写入的帧：segment、offset、byte_count 和逐帧元数据。
+      一个 JSON 对象一行，可以流式读取，不必一次载入整个索引。
+  <批次>/<序列号>/segment_000001.raw 等
+      SDK 原始帧字节顺序拼接。段内没有额外帧头。约 256 MiB 分段，
+      仅在帧边界切换，单个超大帧可能使段超过此阈值。
+  <批次>/<序列号>/segments.json
+      已正常关闭的段的大小、帧数和 SHA256，录制过程中逐段更新。
+  <批次>/<序列号>/integrity.txt
+      可直接阅读的采集完整性报告。
+
+逐帧元数据
+  receive_index：从零开始的应用接收编号，不是硬件帧 ID。
+  camera_tick_100us：SDK 帧头原值，单位 0.1 ms，32 位可回绕。
+  camera_relative_ns：按上述计数展开的相对时间，转换单位不提高时间精度；
+      时间戳发生回退/重复后为 null。原始时间戳始终保留。
+  camera_interval_ns：相邻相机帧头时间间隔；异常时为 null。
+  camera_frame_id、camera_timestamp_us：可选 SDK 接口的值。不支持时为
+      null，frame_optional_errors 保存原因。两接口在本机上的支持程度
+      和与当前帧的对应关系尚需实机核验，不能仅凭接口存在就作保证。
+  host_receive_monotonic_ns：GetImageBuffer 返回后的主机单调时钟时间。
+  host_receive_unix_ns：同时记录的主机 Unix 时间。不是相机曝光开始时间，
+      不能用于声称多机同步；系统时间也可能被校准而发生变化。
+  raw_header：图像处理前复制的 SDK 帧头，包含原始格式编码、字节数、
+      宽高、曝光微秒、模拟增益、触发标记及 SDK 报告的 ISP 参数等。
+      Gamma/Contrast 为 -1 表示该模式不适用；黑白相机颜色字段不适用。
+      字段的硬件有效性需要实机确认，不能把未支持字段的默认零当测量值。
+  metadata_units 在 dataset.json 中说明主要字段单位。
+
+像素解释
+  raw_header.uiMediaType 是 SDK 像素格式代码；snapshot_start.values 中
+  raw_media_formats 列出相机报告的格式描述。按正确格式解释位深、Bayer
+  排列、打包方式和行填充。byte_count 必须等于 raw_header.uBytes。
+  不要假定所有帧都是 width*height，也不要把现有 Bayer8 当作 10/16 位。
+  本格式不同于官方软件导出的 MVSC raw_multi，不能直接复用旧转换脚本。
+  模拟数据是标记 simulated=true 的 640x400 Mono8 生成数据，不是实测。
+
+完整性含义
+  complete=true 表示本次结束未报告写入错误且所有应用接收帧都已写入。
+  integrity.status：
+      pass_observed  当前可观察计数一致，无已检测警告。
+      review         有 SDK 丢帧、时间戳/帧 ID 异常或统计不可用等待核查项。
+      failed         写入失败或接收帧未完整写入。
+  SDK 帧统计使用每次采集的起止差值，避免把此前预览混入本次计数；
+  读取边界与接收边界不是硬件原子操作，差值和应用帧数含义不同。
+  无补帧、哈希通过、complete=true，都不单独证明硬件零丢帧。
+  帧 ID 缺口只作提示，需验证该型号 ID 的递增规则。
+  interval_ns 保存相邻时间间隔的最小、最大、均值和标准差。
+
+ZED 2i 数据（schema=zed-recording/1，MP4 与研究模式都保存 SVO2）
+  <序列号>.svo2：ZED SDK 原生格式。包含左右目未校正图像、IMU / 磁力计 / 气压计和逐帧时间戳；不含深度和标定。
+      深度在回放时用 ZED SDK 计算。压缩方式记录在 JSON 的 compression 中。
+  <序列号>.calibration.conf：SDK 自动下载的出厂标定文件副本。复现深度时使用它，以免日后标定被更新。
+  <序列号>.received.jsonl：开始到停止之间每次 grab 收到的帧，一行一个 JSON。
+      camera_timestamp_ns：SDK 图像时间戳，主机 SYSTEM_CLOCK，Unix 纳秒。不是曝光中心时间（USB 型号不支持）。
+      camera_timestamp_us：用于与 SVO2 中的帧对应。SVO2 只保存到微秒，实时值带有恒定的亚微秒余数。
+      receive_index：计数帧编号；重复返回的帧 duplicate=true，receive_index 为 null。
+      grab_ms：grab 内部耗时，包含等待下一帧和 SDK 录制工作。
+      outside_grab_ms / app_late：两次 grab 之间程序自身的耗时，超过一个周期为 true。
+      sdk_dropped_total：SDK 原始丢帧计数，负载高时会清零，仅供参考。
+      stop_padding=true：停止时多录的填充帧，不计入帧数，可能在也可能不在 SVO2 中。
+  <序列号>.json：snapshot_start / snapshot_end 记录全部可读的相机参数。locked_from_auto 记录开始时由自动锁定的值。
+      integrity 中分开记录：
+        camera_missing_frames：相机 / SDK 侧缺帧。
+        app_missing_frames：程序处理不足造成的缺帧。
+        duplicates：重复返回的帧。
+        measured_fps 与 nominal_fps：实际帧率与标称帧率。
+        svo_check：停止后打开 SVO2，核对帧数和首尾时间戳。
+  完整核对：zed_worker.py --verify-svo 会解码全部帧，按微秒时间戳与 received.jsonl 逐一比对。
+  时间对齐：ZED 和 MindVision 的 host_receive_unix_ns 都来自同一主机时钟，可以近似对齐，但不是硬件同步。
+
+MP4 模式的补充记录
+  2.3 的 encoder 记录实际使用的编码器、质量参数、方向滤镜及硬件探测失败原因。
+  encoder_performance 的 queue_peak / queue_capacity 记录队列峰值和容量。
+  逐帧 JSONL 异步写入，正常停止等待写完；写入失败或队列满报告不完整。
+  MP4 的旋转/镜像交给 FFmpeg，预览在独立线程中使用等价变换，RAW 不变。
+  2.2 的 capture_performance 记录主机各阶段耗时（ms），不是曝光时间；
+  get_buffer_including_wait 包含等待下一帧，嵌套阶段不能直接相加。
+  encoder_performance 记录 MP4 编码入队等待和管道写入耗时。
+  新增 <序列号>.received.jsonl，记录每个应用接收帧及 selected_for_mp4。
+  <序列号>.frames.csv 的 source_receive_index 对应该接收索引；
+  repeated=1 明确标记重复帧。MP4 是有损、定帧率观看文件，不是 RAW 替代品。
+
+校验工具（只读，不修改数据）
+  在 PowerShell 中运行：
+    & 'Y:\camera-sdk-review\mvsdk-python\.venv-recorder\Scripts\python.exe' 'Y:\camera-sdk-review\mvsdk-python\research_data.py' '数据集文件夹'
+  校验帧索引连续性、偏移、长度、文件大小、段 SHA256 与索引 SHA256。
+  valid=true 还要求数据集正常结束。异常中断的数据集即使可读也不报告
+  完整；readable_frames 给出索引可读取的完整帧数量。
+  保存中每约一秒刷新原始段与索引，正常关闭时再次刷新；强制退出或
+  断电仍可能损坏尾部，不能保证最近一秒一定保全。
+  校验工具会报告尾部未索引字节和截断，不自动修复或删除任何内容。
+
+读取一帧（Python 标准库示例）
+  import json
+  from pathlib import Path
+  folder = Path(r'数据集文件夹')
+  with (folder / 'frames.jsonl').open(encoding='utf-8') as index:
+      frame = json.loads(next(index))
+  with (folder / frame['segment']).open('rb') as data:
+      data.seek(frame['offset'])
+      pixels = data.read(frame['byte_count'])
+  # pixels 是该帧原始字节；按 frame['raw_header']['uiMediaType'] 解码。
+
+数据量与性能
+  实际保存 1920x1200 Bayer8 60 帧/秒时，单台像素约 138 MB/s、8.3 GB/分钟。
+  本模式未限制到 60 FPS；若实际采集更快，数据量会相应增大。
+  开始时显示根据当前预览采集速度估算的 RAW 写速；它不是磁盘性能实测。
+  写入队列有界，写盘跟不上或检测到剩余空间过低会停止并报告异常。
+  尚未通过实机持续写速/带宽验收，应先做实际分辨率、台数和时长的试采。

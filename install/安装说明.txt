@@ -1,0 +1,59 @@
+多相机录像台 2.4 · 在新电脑上安装
+==================================
+
+本压缩包含：程序（mvsdk-python）、离线 Python 依赖、一键安装脚本。
+不包含：显卡驱动、两家相机的 SDK、Python 本身、FFmpeg；它们要按下面的顺序单独安装一次。
+录像会默认保存在本文件夹下的 recordings 文件夹里。
+
+电脑要求
+  Windows 10 / 11 64 位，NVIDIA 显卡（ZED 和 GPU 视频编码都需要），USB 3 接口。
+  多台相机时，每台 ZED 最好各自占一条独立的 USB 通道（参见 mvsdk-python\ZED_集成方案.md）。
+
+第 0 步  解压
+  把整个压缩包解压到一个固定位置，例如 D:\多相机录像台\。
+  路径里可以有中文，但解压后不要再挪动文件夹；如果要挪，挪完后重新运行一次 安装.bat。
+
+第 1 步  NVIDIA 显卡驱动
+  到 NVIDIA 官网下载并安装最新的 Game Ready 或 Studio 驱动。
+  装好后，在命令行里运行 nvidia-smi 能看到显卡名称，就说明装好了。
+
+第 2 步  MindVision（迈德威视）相机 SDK
+  从迈德威视官网或相机随附的资料中，安装 Windows 版“工业相机 SDK / 平台软件”。
+  原电脑使用的版本是 2.1.10.197。装完后插上相机，用官方软件确认能出图，然后关闭官方软件。
+
+第 3 步  ZED SDK 5.5
+  打开 https://www.stereolabs.com/developers/release ，下载
+  “ZED SDK for Windows 10/11 5.5 — CUDA 13, TensorRT 10”。
+  以管理员身份安装到默认位置；如果提示安装 CUDA，按提示安装。装完必须重启电脑。
+  重启后插上 ZED，可以用 ZED Explorer 确认能出图，然后关闭它。
+
+第 4 步  Python 3.14（64 位）
+  到 https://www.python.org/downloads/ 下载 Python 3.14 的 Windows installer (64-bit)。
+  安装时勾选 “Add python.exe to PATH”。必须是 3.14：随包附带的 ZED Python 接口只适用于 3.14。
+
+第 5 步  FFmpeg
+  下载 Windows 版 FFmpeg 完整版（例如 gyan.dev 的 ffmpeg-release-full 或 BtbN 的 win64 gpl 版），解压。
+  做以下任意一种：
+    a. 把解压后的 bin 文件夹（里面有 ffmpeg.exe、ffprobe.exe）加入系统环境变量 PATH；
+    b. 或者把 bin 文件夹复制到 mvsdk-python\ffmpeg\bin（程序会自动找到）。
+
+第 6 步  一键安装
+  双击本文件夹里的“安装.bat”。安装脚本会：
+    - 检查以上各项是否装好，缺什么会写明怎么处理；
+    - 用随包附带的离线安装包创建两个 Python 环境，不需要联网；
+    - 在桌面创建“多相机录像台”和“多相机录像台（模拟演示）”快捷方式；
+    - 运行不连接相机的离线自检。
+  检查结果同时保存在 mvsdk-python\install\install-report.txt。
+  前面某一步漏装也没关系：补装后再双击一次“安装.bat”即可。
+  如果需要重建 Python 环境，在命令行运行：安装.bat --rebuild
+
+第 7 步  试用
+  先打开“多相机录像台（模拟演示）”，熟悉界面，不需要接相机。
+  然后接上相机，打开“多相机录像台”，按左栏 1 → 2 → 3 的顺序操作，按 F9 开始 / 停止录像。
+  界面说明见 mvsdk-python\RECORDER_使用说明.txt。
+
+注意
+  - 笔记本录像时请接电源；电池供电时 GPU 编码可能启动过慢，导致录像失败。
+  - ZED 第一次连接时会联网下载该相机的出厂标定文件。
+  - ZED 导出深度（NEURAL / NEURAL_LIGHT）第一次使用时要联网下载 AI 模型并优化，约 20–30 分钟，之后不再需要。
+  - 不要同时打开相机官方软件或 ZED Explorer，否则相机会被占用。

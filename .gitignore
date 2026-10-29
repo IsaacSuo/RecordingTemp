@@ -1,0 +1,27 @@
+*.pyc
+*.egg-info
+build
+
+.vscode
+.idea
+.venv-recorder/
+presets/
+startup-error.log
+.venv-zed/
+logs/
+
+install/install-report.txt
+
+# Vendor SDKs are not published: MindVision Python SDK package and its packaging/udev files, ZED/third-party wheels
+mvsdk/
+scripts/
+setup.py
+pyproject.toml
+MANIFEST.in
+install/wheels/
+*.whl
+# Local runtime files
+__pycache__/
+*.lnk
+*.tmp
+*.partial
