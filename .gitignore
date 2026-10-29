@@ -12,8 +12,8 @@ logs/
 
 install/install-report.txt
 
-# Vendor SDKs are not published: MindVision Python SDK package and its packaging/udev files, ZED/third-party wheels
-mvsdk/
+# Vendor SDKs are not published: MindVision Linux libraries (the Python wrapper mvsdk/*.py is kept) and packaging/udev files, ZED/third-party wheels
+mvsdk/lib/
 scripts/
 setup.py
 pyproject.toml

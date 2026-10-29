@@ -3,7 +3,7 @@
 
 程序可以从 GitHub 仓库获取（https://github.com/IsaacSuo/RecordingTemp），也可以来自打包的压缩包。
 都不包含：显卡驱动、两家相机的 SDK、Python 本身、FFmpeg；它们要按下面的顺序单独安装一次。
-GitHub 版本还不含 mvsdk 文件夹（MindVision Python 接口）和离线 Python 依赖，见第 0 步。
+GitHub 版本不含离线 Python 依赖，安装时会联网下载（见第 6 步）。
 录像默认保存在程序文件夹上一级的 recordings 文件夹里。
 
 电脑要求
@@ -14,7 +14,6 @@ GitHub 版本还不含 mvsdk 文件夹（MindVision Python 接口）和离线 Py
   GitHub：先建一个固定文件夹，例如 D:\多相机录像台\，在里面运行
       git clone https://github.com/IsaacSuo/RecordingTemp.git
     程序在 D:\多相机录像台\RecordingTemp，录像会存到 D:\多相机录像台\recordings。
-    再把 mvsdk 文件夹（里面有 mvsdk.py）放进 RecordingTemp；它不在仓库里，向维护人员索取。
     以后更新程序：在 RecordingTemp 里运行 git pull。
   压缩包：解压到一个固定位置，例如 D:\多相机录像台\。
   路径里可以有中文，但放好后不要再挪动文件夹；如果要挪，挪完后重新运行一次 安装.bat。
