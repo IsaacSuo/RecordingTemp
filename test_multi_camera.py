@@ -174,7 +174,8 @@ class RecordingTests(unittest.TestCase):
 
         root = tk.Tk()
         root.withdraw()
-        with tempfile.TemporaryDirectory() as folder:
+        # The simulated ZED's auto-export is killed by close(); its encoder logs may stay open for a moment.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
             app = RecorderApp(root, demo=True, output=folder)
             app.isolate_mindvision = False  # the injected fault lives in this process
             app.system = FaultSystem()
@@ -221,6 +222,9 @@ class RecordingTests(unittest.TestCase):
                     except tk.TclError:
                         break
                     time.sleep(0.02)
+                until = time.monotonic()+10
+                while app.exports.busy and time.monotonic() < until:
+                    time.sleep(0.05)
                 self.assertTrue(all(not c.worker.is_alive() for c in app.cards.values()))
             # Tk objects must be finalized on this main thread before later tests
             # allocate enough objects for a worker-thread garbage collection.

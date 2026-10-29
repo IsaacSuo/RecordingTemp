@@ -37,6 +37,18 @@ def update_batch_exports(batch_folder, serial, info):
     temp.replace(target)
 
 
+def completed_export(job, result):
+    """The result of an export that finished before a pause stopped it, else None."""
+    if result and result.get('status') == 'completed':
+        return result
+    folder = Path(job['svo']).parent / ('export' + (f'_{job["depth"]}' if job.get('depth') else ''))
+    try:  # killed after export.partial was renamed but before it reported
+        summary = json.loads((folder / 'export.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    return dict(summary, folder=str(folder)) if summary.get('status') == 'completed' else None
+
+
 class ExportQueue:
     """Up to `parallel` exports at once (measured: three 1080p exports each still run faster than real time)."""
 
@@ -133,7 +145,12 @@ class ExportQueue:
             process.wait()
         with self.lock:
             interrupted = job.get('interrupted')
-            if interrupted:
+            done = completed_export(job, result) if interrupted else None
+            if done:  # finished just before the pause reached it: keep the result instead of exporting again
+                job.pop('interrupted', None)
+                self.jobs = [j for j in self.jobs if j is not job]
+                result, interrupted = done, False
+            elif interrupted:
                 self.running.pop(job['key'], None)
         if interrupted:
             self._emit('export_paused', job)

@@ -10,7 +10,7 @@ import tempfile
 import time
 import unittest
 
-from export_queue import ExportQueue
+from export_queue import ExportQueue, completed_export
 
 ROOT = Path(__file__).resolve().parent
 PERIOD = 33_495_000
@@ -147,12 +147,23 @@ class QueueTests(unittest.TestCase):
         self.assertEqual((result['status'], result['output_frames']), ('completed', 2400))
         self.assertFalse((self.folder / 'export.partial').exists())
 
+    def test_export_finished_before_pause_is_not_redone(self):
+        svo, _ = fake_recording(self.folder, frames=30, gaps=())
+        job = self.job(svo)
+        self.assertIsNone(completed_export(job, None))
+        self.exports.add(dict(job))
+        self.assertEqual(self.wait('export_finished')['result']['status'], 'completed')
+        # pause killed the process after export.partial was renamed but before it reported
+        done = completed_export(job, None)
+        self.assertEqual((done['status'], done['output_frames'], done['folder']), ('completed', 30, str(self.folder / 'export')))
+        self.assertIsNone(completed_export(dict(job, depth='NEURAL'), None))
+
     def test_parallel_exports_pause_together_and_resume(self):
         jobs = []
         for serial in ('A', 'B'):
             folder = self.folder / serial
             folder.mkdir()
-            svo, _ = fake_recording(folder, frames=1500, gaps=(), serial=serial)
+            svo, _ = fake_recording(folder, frames=6000, gaps=(), serial=serial)  # long enough to be paused mid-way
             jobs.append(dict(serial=serial, name=serial, svo=str(svo), depth=None, batch_folder=str(folder), simulated=True))
         for job in jobs:
             self.exports.add(job)
@@ -160,7 +171,7 @@ class QueueTests(unittest.TestCase):
         while len(self.exports.running) < 2 and time.monotonic() < deadline:
             time.sleep(0.05)
         self.assertEqual(len(self.exports.running), 2)  # both run at once
-        time.sleep(1.0)
+        time.sleep(0.5)
         self.assertTrue(self.exports.pause())
         paused = {self.wait('export_paused')['job']['serial'], self.wait('export_paused')['job']['serial']}
         self.assertEqual(paused, {'A', 'B'})
@@ -171,7 +182,7 @@ class QueueTests(unittest.TestCase):
             data = self.wait('export_finished', timeout=300)
             finished[data['job']['serial']] = data['result']
         for serial in ('A', 'B'):
-            self.assertEqual((finished[serial]['status'], finished[serial]['output_frames']), ('completed', 1500))
+            self.assertEqual((finished[serial]['status'], finished[serial]['output_frames']), ('completed', 6000))
             batch = json.loads((self.folder / serial / 'batch.json').read_text(encoding='utf-8'))
             self.assertEqual(batch['exports'][serial]['status'], 'completed')
 
