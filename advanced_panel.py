@@ -8,11 +8,15 @@ class AdvancedPanel:
     def __init__(self, card):
         self.card = card
         self.app = card.app
+        px = self.app.px  # sizes are physical pixels; the app is DPI-aware, so scale them like the fonts
         self.window = tk.Toplevel(self.app.root)
         self.window.title('高级参数 · '+card.info['serial'])
-        self.window.geometry('860x680')
+        # Fit the screen and keep a normal (resizable, maximizable) window: a transient one has no maximize button.
+        width = min(px(860), self.window.winfo_screenwidth()-px(40))
+        height = min(px(720), self.window.winfo_screenheight()-px(100))
+        self.window.geometry(f'{width}x{height}')
+        self.window.minsize(min(px(560), width), min(px(420), height))
         self.window.configure(bg='#101820')
-        self.window.transient(self.app.root)
         self.window.protocol('WM_DELETE_WINDOW', self.close)
         self.fields, self.variables, self.widgets, self.choices = {}, {}, {}, {}
         self.pending = None
@@ -23,6 +27,22 @@ class AdvancedPanel:
         tk.Label(self.window, text='高级参数', bg='#101820', fg='#edf3f7', font=('Microsoft YaHei UI', 18, 'bold')).pack(anchor='w', padx=20, pady=(16, 6))
         tk.Label(self.window, text='方向选择立即应用；其他修改点击“应用修改”，随后显示实际读回值。',
                  bg='#101820', fg='#9aafbd').pack(anchor='w', padx=20, pady=(0, 12))
+        # Buttons, status and note are packed from the bottom before the notebook, so a short window
+        # shrinks the (scrollable) parameter area instead of pushing the buttons out of sight.
+        buttons = tk.Frame(self.window, bg='#101820')
+        buttons.pack(side='bottom', fill='x', padx=20, pady=15)
+        self.apply_button = ttk.Button(buttons, text='应用修改', command=self.apply)
+        self.apply_button.pack(side='right')
+        self.refresh_button = ttk.Button(buttons, text='重新读取', command=self.refresh)
+        self.refresh_button.pack(side='right', padx=10)
+        self.wb_button = ttk.Button(buttons, text='一次白平衡', command=self.white_balance)
+        self.wb_button.pack(side='left')
+        status = tk.Label(self.window, textvariable=self.status, bg='#101820', fg='#4ed4b1', anchor='w', justify='left')
+        status.pack(side='bottom', fill='x', padx=20)
+        self.note = tk.Label(self.window, text=card.advanced_note, bg='#101820', fg='#9aafbd', anchor='w', justify='left')
+        self.note.pack(side='bottom', fill='x', padx=20, pady=12)
+        self.wrapped = (status, self.note)
+        self.window.bind('<Configure>', self.resized)
         self.notebook = ttk.Notebook(self.window)
         self.notebook.pack(fill='both', expand=True, padx=20)
         self.tabs = {}
@@ -42,23 +62,15 @@ class AdvancedPanel:
             self.tabs[name] = tab
             self.canvases[name] = canvas
         self.window.bind('<MouseWheel>', self.scroll)
-        self.note = tk.Label(self.window, text=card.advanced_note,
-                            bg='#101820', fg='#9aafbd', justify='left', wraplength=810)
-        self.note.pack(fill='x', padx=20, pady=12)
-        tk.Label(self.window, textvariable=self.status, bg='#101820', fg='#4ed4b1', anchor='w',
-                 wraplength=810, justify='left').pack(fill='x', padx=20)
-        buttons = tk.Frame(self.window, bg='#101820')
-        buttons.pack(fill='x', padx=20, pady=15)
-        self.apply_button = ttk.Button(buttons, text='应用修改', command=self.apply)
-        self.apply_button.pack(side='right')
-        self.refresh_button = ttk.Button(buttons, text='重新读取', command=self.refresh)
-        self.refresh_button.pack(side='right', padx=10)
-        self.wb_button = ttk.Button(buttons, text='一次白平衡', command=self.white_balance)
-        self.wb_button.pack(side='left')
         self.refresh()
 
     def exists(self):
         return bool(self.window.winfo_exists())
+
+    def resized(self, event):
+        if event.widget is self.window:  # children's <Configure> events also reach this binding
+            for label in self.wrapped:
+                label.configure(wraplength=max(self.app.px(200), event.width-self.app.px(40)))
 
     def scroll(self, event):
         name = self.notebook.tab(self.notebook.select(), 'text')
@@ -156,7 +168,7 @@ class AdvancedPanel:
                 hint = f'{spec["min"]:g} – {spec["max"]:g}'
             else:
                 hint = ''
-            tk.Label(tab, text=hint, bg='#192631', fg='#9aafbd', anchor='w', wraplength=260).grid(row=row, column=2, sticky='w', pady=4)
+            tk.Label(tab, text=hint, bg='#192631', fg='#9aafbd', anchor='w', wraplength=self.app.px(260)).grid(row=row, column=2, sticky='w', pady=4)
         self.dirty = set(keep)
         for key, value in keep.items():
             self.variables[key].set(value)
