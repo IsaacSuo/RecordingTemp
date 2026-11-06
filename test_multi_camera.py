@@ -180,7 +180,7 @@ class RecordingTests(unittest.TestCase):
             app.isolate_mindvision = False  # the injected fault lives in this process
             app.system = FaultSystem()
 
-            def pump(predicate, seconds=10):
+            def pump(predicate, seconds=20):  # the start now includes the ZED gain match (a few seconds)
                 until = time.monotonic()+seconds
                 while time.monotonic() < until:
                     root.update()
@@ -207,6 +207,11 @@ class RecordingTests(unittest.TestCase):
                 # The simulated ZED in the same batch is stopped by the MindVision fault and still saved.
                 self.assertGreater(results['DEMO-ZED-01']['written_frames'], 0)
                 self.assertTrue(Path(results['DEMO-ZED-01']['video']).is_file())
+                # empty ZED fields: exposure fixed at 10 ms (60 % at 60 fps) and the matched, common gain
+                zed = results['DEMO-ZED-01']
+                self.assertEqual(zed['settings']['exposure'], 60)
+                self.assertEqual(zed['settings']['gain'], zed['gain_match']['common_gain'])
+                self.assertEqual(app.cards['DEMO-ZED-01'].exposure.get(), '')  # the next batch matches again
                 for serial in ('DEMO-01', 'DEMO-02'):
                     self.assertGreater(int(self.probe(results[serial]['video'])['nb_read_frames']), 0)
                 self.assertIn('injected camera disconnection', app.last_error)

@@ -150,6 +150,15 @@ class LiveCamera:
         b, g, r = pixels[keep].mean(axis=0)
         return (float(r / g), float(b / g), float(keep.mean())) if g > 0 else None
 
+    def brightness(self):
+        """Mean luma (0-255) of a small left image; None if it cannot be read."""
+        import numpy as np
+        code = self.camera.retrieve_image(self.small, self.sl.VIEW.LEFT_BGR, self.sl.MEM.CPU, self.sl.Resolution(160, 90))
+        if code != self.sl.ERROR_CODE.SUCCESS:
+            return None
+        b, g, r = self.small.get_data().reshape(-1, 3).astype(np.float32).mean(axis=0)
+        return float(0.114 * b + 0.587 * g + 0.299 * r)
+
     def get(self, key):
         code, value = self.camera.get_camera_settings(getattr(self.sl.VIDEO_SETTINGS, SETTING_NAMES[key]))
         if code != self.sl.ERROR_CODE.SUCCESS:
@@ -302,6 +311,12 @@ class SimCamera:
             return None
         cast = 0 if self.values['wb_auto'] else 0.25 * (self.values['wb_temperature'] - self.args.sim_light) / 1000
         return math.exp(cast), math.exp(-cast), 1.0
+
+    def brightness(self):
+        """Luma grows with exposure and doubles every 25 gain units; --sim-scene scales how bright the scene is."""
+        if self.args.sim_dark:
+            return 2.0
+        return min(255.0, self.args.sim_scene * self.values['exposure'] * 2 ** (self.values['gain'] / 25))
 
     def get(self, key):
         if key == 'led' and self.args.sim_led_fail:
@@ -571,6 +586,60 @@ class Worker:
             self.camera.grab()
         return locked, calibration
 
+    def measure_brightness(self, frames=3, samples=2):
+        readings = []
+        for _ in range(samples):
+            for _ in range(frames):
+                self.camera.grab()
+            reading = self.camera.brightness()
+            if reading is None:
+                return None
+            readings.append(reading)
+        return sum(readings) / len(readings)
+
+    def match_gain(self, exposure, settle_s=1.5):
+        """The gain that, at a fixed exposure, gives the image brightness auto exposure / gain settles on.
+
+        The ZED 2i has no auto gain with a fixed exposure (AEC_AGC sets both), so auto exposure runs first, its image
+        brightness is measured, and the gain is then searched at the fixed exposure. The camera is left at that
+        exposure and gain; the recorder then applies one common gain to all ZEDs."""
+        started = time.monotonic()
+        camera = self.camera
+        camera.set('aec_agc', 1)
+        while time.monotonic() - started < settle_s:
+            camera.grab()
+        auto = dict(exposure=camera.get('exposure'), gain=camera.get('gain'))
+        target = self.measure_brightness()
+        if target is None or not 15 <= target <= 240:
+            camera.set('aec_agc', 1)
+            return dict(matched=False, auto=auto, target=target,
+                        reason='画面过暗、过曝或无法取图，无法按亮度匹配增益')
+        camera.set('aec_agc', 0)
+        camera.set('exposure', exposure)
+        tried = {}
+
+        def level(gain):
+            if gain not in tried:
+                camera.set('gain', gain)
+                tried[gain] = self.measure_brightness()
+            return tried[gain]
+
+        low, high = RANGES['gain']
+        while high - low > 1:  # brightness rises with gain
+            middle = (low + high) // 2
+            value = level(middle)
+            if value is None:
+                break
+            low, high = (middle, high) if value < target else (low, middle)
+        best = min((g for g in (low, high) if level(g) is not None), key=lambda g: abs(level(g) - target), default=None)
+        if best is None:
+            camera.set('aec_agc', 1)
+            return dict(matched=False, auto=auto, target=target, reason='匹配增益时无法取图')
+        camera.set('gain', best)
+        return dict(matched=True, exposure=exposure, gain=best, auto=auto, target=round(target, 1),
+                    achieved=round(level(best), 1), tried=len(tried), seconds=round(time.monotonic() - started, 2),
+                    saturated=best in RANGES['gain'])
+
     def snapshot(self):
         values = self.read_values()
         return dict(values=values['values'], unsupported_or_failed=values['unavailable'], flip=self.args.flip,
@@ -621,7 +690,8 @@ class Worker:
                     schema='zed-recording/1', mode='svo2', batch_mode=command.get('mode'), mode_label=self.args.mode_label,
                     resolution=self.args.resolution, width=self.camera.size[0], height=self.camera.size[1],
                     nominal_fps=self.args.fps, target_fps=self.args.fps, compression=command['compression'], flip=self.args.flip,
-                    settings=applied.as_dict(), locked_from_auto=locked, firmware=self.camera.firmware,
+                    settings=applied.as_dict(), locked_from_auto=locked, gain_match=command.get('gain_match'),
+                    firmware=self.camera.firmware,
                     white_balance_calibration=wb_calibration or getattr(self, 'last_wb_calibration', None),
                     sdk_version=self.camera.sdk_version, timestamp_clock=self.camera.timestamp_clock,
                     init_parameters=self.camera.init_parameters, camera_information=self.camera.information,
@@ -756,6 +826,8 @@ class Worker:
                 self.emit('settings', settings=self.apply_settings(ZedSettings.from_dict(command['settings'])).as_dict())
             elif name == 'wb':
                 self.white_balance_button(request)
+            elif name == 'match_gain':
+                self.emit('gain_matched', **self.match_gain(int(command['exposure'])))
             elif name in ('advanced_get', 'advanced_apply'):
                 changes = command.get('changes', {})
                 controls = self.apply_controls(changes) if name == 'advanced_apply' else self.controls()
@@ -917,6 +989,7 @@ def main():
     parser.add_argument('--sim-open-delay', type=float, default=0, help='opening the camera blocks this many seconds (tests)')
     parser.add_argument('--sim-light', type=int, default=4700, help='simulated scene colour temperature in K (tests)')
     parser.add_argument('--sim-dark', action='store_true', help='image too dark to measure white balance (tests)')
+    parser.add_argument('--sim-scene', type=float, default=0.45, help='simulated scene brightness factor (tests)')
     parser.add_argument('--sim-led-fail', action='store_true')
     args = parser.parse_args()
     if args.verify_svo:

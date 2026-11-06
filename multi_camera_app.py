@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import queue
 import shutil
+import statistics
 import threading
 import time
 import tkinter as tk
@@ -21,7 +22,8 @@ from focus_preview import FocusPreview
 from export_queue import DEFAULT_EXPORT, EXPORT_CHOICES, ExportQueue
 from zed_support import (ZedWorker, ZedSettings, list_devices as list_zed_devices, MODES as ZED_MODES,
                          COMPRESSIONS as ZED_COMPRESSIONS, FLIPS as ZED_FLIPS, DEFAULT_MODE as ZED_DEFAULT_MODE,
-                         DEFAULT_COMPRESSION as ZED_DEFAULT_COMPRESSION, DEFAULT_FLIP as ZED_DEFAULT_FLIP)
+                         DEFAULT_COMPRESSION as ZED_DEFAULT_COMPRESSION, DEFAULT_FLIP as ZED_DEFAULT_FLIP,
+                         DEFAULT_EXPOSURE_MS, exposure_percent)
 
 ROOT = Path(__file__).resolve().parent
 FONT = 'Microsoft YaHei UI'
@@ -286,18 +288,19 @@ class ZedCard(CameraCard):
     """ZED 2i: SVO2 recording in a separate process; exposure / gain are SDK 0-100 units."""
     kind = 'zed'
     type_label = 'ZED · SVO2'
-    advanced_note = ('ZED 参数为 SDK 0–100 等单位，录制期间不读写相机参数（读取会造成丢帧）。开始录制时自动曝光 / 白平衡锁定为当时的值。\n'
+    advanced_note = ('ZED 参数为 SDK 0–100 等单位，录制期间不读写相机参数（读取会造成丢帧）。曝光 / 增益留空时，开始录制前曝光固定为 10 ms，'
+                     '增益按自动测光的亮度匹配，所选 ZED 统一用同一增益；白平衡自动时锁定为当时的值。\n'
                      '画面翻转、分辨率与帧率属于连接参数：断开后在参数面板修改，重新连接生效。')
 
     def build_extra(self):
-        self.exp_label.configure(text='曝光 %（空 = 自动）')
-        self.gain_label.configure(text='增益（空 = 自动）')
+        self.exp_label.configure(text='曝光 %（空 = 10 ms）')
+        self.gain_label.configure(text='增益（空 = 统一匹配）')
         self.exposure.set('')
         self.gain.set('')
         self.wb_button.configure(text='自动白平衡并锁定')
         self.advanced_button.configure(text='高级参数…')
-        self.range_label.configure(text='曝光 / 增益填 0–100，两项都留空为自动；开始录制时锁定当前值。'
-                                        'SVO2 保存左右目原图、IMU 与逐帧时间戳。')
+        self.range_label.configure(text='两项都留空：开始录制前曝光固定 10 ms，增益按亮度匹配后所选 ZED 统一；'
+                                        '也可都填 0–100 手动指定（曝光为帧周期 %）。SVO2 保存左右目原图、IMU 与逐帧时间戳。')
         self.mode = tk.StringVar(value=self.info.get('mode', ZED_DEFAULT_MODE))
         self.compression = tk.StringVar(value=ZED_DEFAULT_COMPRESSION)
         self.flip = tk.StringVar(value=self.info.get('flip', ZED_DEFAULT_FLIP))
@@ -351,6 +354,7 @@ class RecorderApp:
     isolate_mindvision = True
     # A camera that loses its USB link can block inside the vendor SDK. Never wait for it forever.
     PREPARE_TIMEOUT_S = 45
+    GAIN_MATCH_TIMEOUT_S = 30
     NO_IMAGE_WARN_S = 10  # connected but no statistics from the worker: usually a USB link the SDK keeps recovering
     STOP_TIMEOUT_S = 60
     CLOSE_TIMEOUT_S = 60       # while a batch is being saved
@@ -365,6 +369,7 @@ class RecorderApp:
         self.scanning = self.closing = self.disconnecting = False
         self.phase = 'idle'
         self.batch = None
+        self.gain_match = None
         self.last_folder = None
         self.completed_batches = []
         self.scan_complete = False
@@ -388,7 +393,7 @@ class RecorderApp:
         root.protocol('WM_DELETE_WINDOW', self.close)
         self.build_style()
         self.output = tk.StringVar(value=str(output or ROOT.parent / 'recordings'))
-        self.fps = tk.StringVar(value='30')
+        self.fps = tk.StringVar(value='60')  # user decision 2026-11-06
         self.mode = tk.StringVar(value='MP4 视频')
         self.export_choice = tk.StringVar(value=DEFAULT_EXPORT)
         self.exports = ExportQueue(self.events, demo, ROOT / 'logs')
@@ -846,7 +851,7 @@ class RecorderApp:
                 continue
             try:
                 if float(card.exposure.get()) >= 1000/fps:
-                    card.exposure.set('10' if fps == 60 else '20')
+                    card.exposure.set(f'{DEFAULT_EXPOSURE_MS:g}')
             except ValueError:
                 pass
         self.note(f'已选择 {fps} FPS。开始录像时自动应用各相机参数；画面偏暗优先增加照明或开大光圈。')
@@ -908,7 +913,8 @@ class RecorderApp:
         except Exception as exc:
             self.note(str(exc), True)
 
-    def start_recording(self):
+    def start_recording(self, matched=None):
+        """matched: the result of the ZED gain match, when this call continues a start that waited for it."""
         if self.phase != 'idle' or self.closing:
             return
         try:
@@ -928,6 +934,13 @@ class RecorderApp:
             names = [safe_name(c.info['serial']).lower() for c in cards]
             if len(set(names)) != len(names):
                 raise ValueError('相机序列号无法生成唯一文件名')
+            if matched is None:
+                auto = [c for c in cards if c.kind == 'zed' and settings[c.info['serial']].automatic]
+                if auto:
+                    self.begin_gain_match(auto)
+                    return
+            else:
+                settings.update(matched['settings'])
             folder = Path(self.output.get()).expanduser().resolve()
             folder.mkdir(parents=True, exist_ok=True)
             if shutil.disk_usage(folder).free < 256 * 1024**2:
@@ -945,6 +958,8 @@ class RecorderApp:
                               mode='raw' if research else 'mp4', experiment=experiment, software=software_info(),
                               requested_at=datetime.now().astimezone().isoformat())
             self.batch['export_depth'] = EXPORT_CHOICES[self.export_choice.get()]
+            self.batch['gain_match'] = matched['record'] if matched else None
+            self.batch['matched_ids'] = set(matched['settings']) if matched else set()
             if self.exports.pause():
                 self.note('ZED 导出已暂停，避免与录像争用显卡；本批录完后从头继续导出')
             self.phase = 'preparing'
@@ -954,9 +969,12 @@ class RecorderApp:
                 card.issue = None
                 card.show_state('准备中…', ACCENT)
                 card.record_stats.configure(text='', fg=ACCENT)
+                extra = card.prepare_extra()
+                if matched and card.info['serial'] in matched['settings']:
+                    extra['gain_match'] = matched['record']
                 card.worker.command('prepare', folder=camera_folders[card.info['serial']], fps=fps,
                                     settings=settings[card.info['serial']], gate=gate,
-                                    mode=self.batch['mode'], experiment=experiment, **card.prepare_extra())
+                                    mode=self.batch['mode'], experiment=experiment, **extra)
             self.set_status('准备中', LINE, ACCENT)
             self.session_text.configure(text=f'正在准备 {len(cards)} 台相机…')
             estimated = sum(c.last_fps*c.raw_size for c in cards)/1e6
@@ -965,7 +983,57 @@ class RecorderApp:
             self.note(str(exc), True)
             if self.phase == 'preparing':
                 self.stop_recording()
+        finally:
+            self.refresh_controls()
+
+    def begin_gain_match(self, cards):
+        """ZED exposure fixed at DEFAULT_EXPOSURE_MS; each ZED finds the gain matching its auto-exposure brightness."""
+        exposure = {c.info['serial']: exposure_percent(DEFAULT_EXPOSURE_MS, ZED_MODES[c.info.get('mode', ZED_DEFAULT_MODE)][1])
+                    for c in cards}
+        self.gain_match = dict(waiting=set(exposure), results={}, exposure=exposure,
+                               deadline=time.monotonic() + self.GAIN_MATCH_TIMEOUT_S)
+        self.phase = 'matching'
+        for card in cards:
+            card.show_state('测光中…', ACCENT)
+            card.worker.command('match_gain', exposure=exposure[card.info['serial']])
+        self.set_status('测光中', LINE, ACCENT)
+        self.session_text.configure(text=f'ZED 曝光固定 {DEFAULT_EXPOSURE_MS:g} ms，正在按画面亮度匹配增益（约 3–5 秒）…')
+
+    def end_gain_match(self, message=None):
+        for serial in self.gain_match['exposure']:
+            card = self.cards.get(serial)
+            if card:
+                card.show_state('预览中' if card.connected else '未连接', ACCENT if card.connected else DIM)
+        self.gain_match = None
+        self.phase = 'idle'
+        if message:
+            self.note(message, True)
+        self._controls_signature = None
         self.refresh_controls()
+
+    def gain_matched(self, serial, data):
+        match = self.gain_match
+        if self.phase != 'matching' or not match or serial not in match['waiting']:
+            return
+        match['waiting'].discard(serial)
+        match['results'][serial] = data
+        if not data.get('matched'):
+            self.end_gain_match(f'{self.camera_name(serial)} 无法按亮度匹配增益：{data.get("reason")}。'
+                                '请在该 ZED 卡片上手动填写曝光和增益后再开始。')
+            return
+        if match['waiting']:
+            return
+        common = round(statistics.median(r['gain'] for r in match['results'].values()))
+        record = dict(method="exposure fixed; gain matched to each ZED's auto-exposure image brightness; the median is used on all",
+                      exposure_ms=DEFAULT_EXPOSURE_MS, exposure_percent=match['exposure'], common_gain=common,
+                      per_camera=match['results'])
+        settings = {s: ZedSettings(match['exposure'][s], common) for s in match['results']}
+        per = '、'.join(f'{self.camera_name(s)} {r["gain"]}' for s, r in match['results'].items())
+        self.end_gain_match()
+        self.note(f'ZED 曝光 {DEFAULT_EXPOSURE_MS:g} ms，统一增益 {common}（各台匹配值：{per}）')
+        if any(r.get('saturated') for r in match['results'].values()):
+            self.note('有 ZED 的匹配增益到了 0 或 100 的边界：画面可能偏亮或偏暗，建议调整照明', True)
+        self.start_recording(matched=dict(settings=settings, record=record))
 
     def stop_recording(self, reason=None):
         if self.phase not in ('preparing', 'recording'):
@@ -1003,6 +1071,10 @@ class RecorderApp:
 
     def check_deadlines(self):
         """Give up on cameras that stop answering instead of leaving the batch stuck in preparing / stopping."""
+        if self.phase == 'matching' and self.gain_match and time.monotonic() > self.gain_match['deadline']:
+            late = '、'.join(map(self.camera_name, sorted(self.gain_match['waiting'])))
+            self.end_gain_match(f'{late} 在 {self.GAIN_MATCH_TIMEOUT_S} 秒内没有完成增益匹配，未开始录像')
+            return
         if not self.batch or time.monotonic() < self.batch.get('deadline', float('inf')):
             return
         if self.phase == 'preparing':
@@ -1030,7 +1102,7 @@ class RecorderApp:
                     phase=self.phase, cameras=sorted(batch['ids']), errors=batch['errors'],
                     recordings=batch['summaries'], mode=batch['mode'], experiment=batch['experiment'], software=batch['software'],
                     camera_folders={serial: path.name for serial, path in batch.get('camera_folders', {}).items()},
-                    exports=batch.get('exports', {}),
+                    exports=batch.get('exports', {}), zed_gain_match=batch.get('gain_match'),
                     layout='one subfolder per camera: <kind>_<serial>/; ZED exports in <kind>_<serial>/export/')
         target = batch['folder'] / 'batch.json'
         temp = target.with_suffix('.tmp')
@@ -1181,7 +1253,10 @@ class RecorderApp:
             if self.closing:
                 card.worker.command('close')
         elif kind == 'settings':
-            card.set_settings(data['settings'])
+            if not (self.batch and serial in self.batch.get('matched_ids', ())):
+                card.set_settings(data['settings'])  # a matched ZED keeps its fields empty, so the next batch matches again
+        elif kind == 'gain_matched':
+            self.gain_matched(serial, data)
         elif kind in ('advanced', 'advanced_failed'):
             card.control_pending = False
             if card.advanced_panel:

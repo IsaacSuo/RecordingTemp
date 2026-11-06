@@ -34,6 +34,14 @@ COMPRESSIONS = {'H.264 有损（默认）': 'H264', 'H.265 有损': 'H265', 'H.2
 DEFAULT_COMPRESSION = 'H.264 有损（默认）'
 FLIPS = {'自动（按 IMU 判断倒装）': 'AUTO', '不翻转': 'OFF', '翻转 180°': 'ON'}
 DEFAULT_FLIP = '自动（按 IMU 判断倒装）'
+# User decision 2026-11-06: every camera exposes 10 ms (shorter was unstable); ZED gain is matched to the auto-exposure
+# brightness once at the start of a batch and the same value is used on all ZEDs.
+DEFAULT_EXPOSURE_MS = 10.0
+
+
+def exposure_percent(ms, fps):
+    """ZED exposure setting (percent of the frame period) for an exposure time in ms."""
+    return max(0, min(100, round(ms * fps / 10)))
 
 ZED_METADATA_UNITS = dict(
     camera_timestamp_ns='ZED SDK image timestamp, Unix nanoseconds on the host SYSTEM_CLOCK; SVO2 keeps microseconds',

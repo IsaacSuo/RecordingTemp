@@ -26,6 +26,12 @@ FFmpeg 的查找顺序：环境变量 `FFMPEG_DIR` → 程序目录或上一级�
 - 顶栏显示录像状态、相机概况和磁盘空间；每批结束后弹出结果汇总。
 - 支持高 DPI 屏幕。
 
+默认参数（2026-11-06）：
+- MP4 默认 60 FPS。
+- 所有相机曝光默认 10 ms。MindVision 连接后曝光设为 10 ms，增益保留相机原值。
+- ZED 卡片的曝光和增益都留空时，开始录制前先测光：曝光固定为 10 ms（60 FPS 下为帧周期的 60%），每台 ZED 找出画面亮度与自动测光一致的增益，再让所选 ZED 统一使用这些增益的中位数。测光约需 3–5 秒，结果写入每台 ZED 的 `<序列号>.json`（`gain_match`）和 `batch.json`（`zed_gain_match`）。卡片两项都填写时按填写值录制，不测光。
+- ZED 2i 不支持“曝光固定、只自动调增益”，所以先用自动测光测出目标亮度，再在固定曝光下搜索增益。
+
 每批录像中每台相机有自己的子文件夹。ZED 录完后会在后台自动导出校正后的左右目 MP4、逐帧时间戳 CSV 和导出记录（`zed_export.py`）；深度视频可选 NEURAL / NEURAL_LIGHT，默认不计算深度。
 
 2.4 接入 ZED 2i（ZED SDK 5.5.0）。ZED 在独立进程中运行，使用 `.venv-zed` 环境，与 MindVision 一起一键开始和停止，录成 SVO2（默认 H.264 有损）。每次录像另存：
@@ -72,7 +78,7 @@ FFmpeg 的查找顺序：环境变量 `FFMPEG_DIR` → 程序目录或上一级�
 & 'D:\Datas\env\miniforge\python.exe' 'Y:\camera-sdk-review\mvsdk-python\record_video.py' --fps 60 --seconds 10 --output 'Y:\test\capture_60fps.mp4'
 ```
 
-- 默认曝光：30 FPS 使用 20 ms；60 FPS 使用 10 ms。可通过 `--exposure-ms` 设置，必须小于一帧时长。
+- 默认曝光 10 ms（30 和 60 FPS 都一样）。可通过 `--exposure-ms` 设置，必须小于一帧时长。
 - 沿用加载配置的分辨率和增益；`--gain 2` 表示 2 倍模拟增益，`--rotate180` 设置 180 度旋转。
 - `--config 'D:\path\camera.config'` 加载 SDK 参数文件。要先在相同 SDK 图像处理流程中调好白平衡和色彩；录像导出的 JSON 不是这个参数文件，也不会自动复用之前离线 MP4 的手工校色。
 - `--serial` 默认绑定此前使用的相机序列号 046011323028。

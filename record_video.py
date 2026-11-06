@@ -127,7 +127,7 @@ def main():
     parser.add_argument('--gain', type=float, help='Analog gain multiplier; default preserves loaded gain')
     parser.add_argument('--rotate180', action='store_true', help='Override SDK rotation with 180 degrees')
     args = parser.parse_args()
-    exposure = args.exposure_ms if args.exposure_ms is not None else (20 if args.fps == 30 else 10)
+    exposure = args.exposure_ms if args.exposure_ms is not None else 10
     if not math.isfinite(args.seconds) or not 0 < args.seconds <= 86400:
         parser.error('seconds must be positive and no greater than one day')
     if not math.isfinite(exposure) or not 0 < exposure < 1000 / args.fps:

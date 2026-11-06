@@ -195,6 +195,39 @@ class WorkerProcessTests(unittest.TestCase):
         worker.join(20)
         self.assertEqual(worker.process.returncode, 0)
 
+    def test_gain_match_keeps_auto_brightness_at_fixed_exposure(self):
+        folder = self.make_folder()
+        worker, events = self.start(folder)
+        # simulated auto exposure settles at exposure 60, gain 50; at half the exposure it needs 25 gain units more
+        worker.command('match_gain', exposure=30)
+        result = self.wait(events, 'gain_matched')
+        self.assertTrue(result['matched'], result)
+        self.assertEqual((result['exposure'], result['auto']), (30, dict(exposure=60, gain=50)))
+        self.assertAlmostEqual(result['gain'], 75, delta=1)
+        self.assertAlmostEqual(result['achieved'], result['target'], delta=0.05 * result['target'])
+        summary = self.record_with(worker, events, folder, ZedSettings(30, result['gain']), gain_match=dict(common_gain=result['gain']))
+        self.assertEqual(summary['settings']['exposure'], 30)
+        self.assertEqual(summary['gain_match'], dict(common_gain=result['gain']))
+        self.assertNotIn('exposure', summary['locked_from_auto'])
+
+    def test_gain_match_refuses_an_unreadable_image(self):
+        folder = self.make_folder()
+        worker, events = self.start(folder, '--sim-dark')
+        worker.command('match_gain', exposure=60)
+        result = self.wait(events, 'gain_matched')
+        self.assertFalse(result['matched'])
+        self.assertIn('无法按亮度匹配增益', result['reason'])
+
+    def record_with(self, worker, events, folder, settings, **extra):
+        gate = threading.Event()
+        worker.command('prepare', folder=folder, settings=settings, gate=gate, mode='mp4', experiment={}, compression='H264', **extra)
+        self.wait(events, 'prepared')
+        gate.set()
+        self.wait(events, 'record_started')
+        time.sleep(0.5)
+        worker.command('stop')
+        return self.wait(events, 'record_finished')['summary']
+
     def test_white_balance_locks_to_scene_not_reported_4700(self):
         for light in (3200, 5600):
             folder = self.make_folder()

@@ -34,7 +34,7 @@ def header_dict(head):
 
 @dataclass
 class Settings:
-    exposure_ms: float = 20.0
+    exposure_ms: float = 10.0  # user decision 2026-11-06: 10 ms for every camera
     gain: float = 1.0
     rotate180: bool = True
 
@@ -44,7 +44,7 @@ class Settings:
         if not math.isfinite(self.gain) or self.gain <= 0:
             raise ValueError('增益必须大于 0')
         if fps is not None and self.exposure_ms >= 1000 / fps:
-            raise ValueError(f'{fps} FPS 的曝光须小于 {1000/fps:.2f} ms，建议使用 {20 if fps == 30 else 10} ms')
+            raise ValueError(f'{fps} FPS 的曝光须小于 {1000/fps:.2f} ms，建议使用 10 ms')
 
 
 def safe_name(value):
@@ -114,9 +114,9 @@ class SDKCamera:
                 system.check(self.s.CameraSetFrameSpeed(self.h, 1))
             system.check(self.s.CameraSetIspOutFormat(self.h, self.s.CAMERA_MEDIA_TYPE_RGB8))
             system.check(self.s.CameraSetRotate(self.h, 0))
-            # Keep existing color processing, including WB, gamma and digital gains.
+            # Keep existing color processing, including WB, gamma and digital gains; exposure starts at the default.
             settings = self.settings()
-            self.apply(Settings(min(settings.exposure_ms, 20), settings.gain, settings.rotate180))
+            self.apply(Settings(Settings.exposure_ms, settings.gain, settings.rotate180))
             system.check(self.s.CameraPlay(self.h))
         except Exception:
             self.close()
